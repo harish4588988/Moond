@@ -1,0 +1,1417 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>डेयरी फार्म मैनेजर</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        window.firebaseApp = { initializeApp };
+        window.firebaseAuth = { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged };
+        window.firebaseFirestore = { getFirestore, doc, setDoc, getDoc, onSnapshot };
+    </script>
+
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+        .app-container { max-width: 100%; margin: 0 auto; min-height: 100vh; background-color: #ffffff; display: flex; flex-direction: column; }
+        
+        /* 3D Button Effect */
+        .btn-3d {
+            transition: all 0.1s;
+            box-shadow: 0 4px 0 rgba(0,0,0,0.2);
+        }
+        .btn-3d:active {
+            transform: translateY(4px);
+            box-shadow: 0 0px 0 rgba(0,0,0,0.2);
+        }
+
+        /* Print Styles - Fixes Blank Page Issue */
+        @media print {
+            .no-print { display: none !important; }
+            body { background: white !important; }
+            .print-section { width: 100%; padding: 0 !important; }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        const { useState, useEffect, useMemo } = React;
+
+        // Default Data Structure
+        const defaultData = {
+            milkRecords: [],
+            wallet: { received: 0 },
+            ledger: [],
+            expenses: { feed: [], cows: [], calves: [], others: [] },
+            settings: { farmName: "मेरा डेयरी फार्म", themeColor: "#1e3a8a" } // Dark premium blue by default
+        };
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [db, setDb] = useState(null);
+            const [data, setData] = useState(defaultData);
+            const [loading, setLoading] = useState(true);
+            const [activeTab, setActiveTab] = useState('home');
+            const [printMode, setPrintMode] = useState(false);
+            const [printData, setPrintData] = useState(null);
+
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'dairy-manager-app';
+
+            // Firebase Initialization
+            useEffect(() => {
+                const initFirebase = async () => {
+                    try {
+                        if (typeof window.firebaseApp === 'undefined') {
+                            setTimeout(initFirebase, 100);
+                            return;
+                        }
+                        
+                        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+                            projectId: "dummy-project" // Fallback for local testing if needed
+                        };
+                        
+                        const app = window.firebaseApp.initializeApp(firebaseConfig);
+                        const auth = window.firebaseAuth.getAuth(app);
+                        const firestore = window.firebaseFirestore.getFirestore(app);
+                        setDb(firestore);
+
+                        const initialToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                        
+                        if (initialToken) {
+                            await window.firebaseAuth.signInWithCustomToken(auth, initialToken);
+                        } else {
+                            await window.firebaseAuth.signInAnonymously(auth);
+                        }
+
+                        window.firebaseAuth.onAuthStateChanged(auth, (usr) => {
+                            if (usr) {
+                                setUser(usr);
+                            }
+                        });
+                    } catch (error) {
+                        console.error("Firebase Auth Error:", error);
+                        setLoading(false); // Let app run locally if auth fails completely
+                    }
+                };
+                initFirebase();
+            }, []);
+
+            // Data Syncing
+            useEffect(() => {
+                if (!user || !db) return;
+
+                const docRef = window.firebaseFirestore.doc(db, 'artifacts', appId, 'users', user.uid, 'dairy_state', 'main');
+                
+                const unsubscribe = window.firebaseFirestore.onSnapshot(docRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        setData({ ...defaultData, ...docSnap.data() });
+                    } else {
+                        // First time user, save default
+                        window.firebaseFirestore.setDoc(docRef, defaultData);
+                    }
+                    setLoading(false);
+                }, (error) => {
+                    console.error("Firestore error:", error);
+                    setLoading(false);
+                });
+
+                return () => unsubscribe();
+            }, [user, db]);
+
+            // Global save function
+            const saveData = (newData) => {
+                setData(newData);
+                if (user && db) {
+                    const docRef = window.firebaseFirestore.doc(db, 'artifacts', appId, 'users', user.uid, 'dairy_state', 'main');
+                    window.firebaseFirestore.setDoc(docRef, newData).catch(err => console.error("Save error:", err));
+                }
+            };
+
+            const appColor = data.settings.themeColor;
+
+            // Handle Print
+            const triggerPrint = (pData, type) => {
+                setPrintData({ ...pData, type });
+                setPrintMode(true);
+                setTimeout(() => {
+                    window.scrollTo(0, 0);
+                    window.print();
+                }, 800);
+            };
+
+            if (loading) {
+                return (
+                    <div className="flex flex-col items-center justify-center h-screen bg-gray-100">
+                        <i className="fas fa-spinner fa-spin text-4xl mb-4" style={{color: '#1e3a8a'}}></i>
+                        <h2 className="text-xl font-bold text-gray-700">डेटा लोड हो रहा है...</h2>
+                    </div>
+                );
+            }
+
+            // Print View
+            if (printMode && printData) {
+                return (
+                    <div className="print-section p-4 sm:p-8 bg-white text-black min-h-screen">
+                        {/* Control Buttons for Mobile Print Fix */}
+                        <div className="no-print flex justify-between items-center mb-6 bg-gray-100 p-3 rounded-xl border border-gray-300">
+                            <button onClick={() => setPrintMode(false)} className="bg-gray-300 text-gray-800 px-4 py-2 rounded-lg font-bold btn-3d text-sm sm:text-base">
+                                <i className="fas fa-arrow-left"></i> वापस
+                            </button>
+                            <button onClick={() => {window.scrollTo(0,0); window.print();}} className="bg-red-600 text-white px-4 py-2 rounded-lg font-bold btn-3d text-sm sm:text-base">
+                                <i className="fas fa-download"></i> PDF डाउनलोड
+                            </button>
+                        </div>
+                        
+                        <div className="text-center mb-6 border-b-4 pb-4 border-gray-800">
+                            <h1 className="text-4xl font-black mb-2" style={{color: appColor}}>{data.settings.farmName}</h1>
+                            <p className="text-gray-600 font-bold">रिपोर्ट / रसीद</p>
+                        </div>
+
+                        {/* Print: Milk Slip */}
+                        {printData.type === 'milk_slip' && (
+                            <div className="mt-4 border-2 border-gray-400 p-4 rounded-xl">
+                                <h3 className="text-2xl font-bold mb-4 bg-gray-100 p-2 text-center">दूध की रसीद</h3>
+                                <div className="text-lg space-y-2 font-bold text-gray-700">
+                                    <p>तारीख: <span className="text-black">{new Date(printData.record.date).toLocaleDateString('en-IN')}</span></p>
+                                    <p>समय: <span className="text-black">{printData.record.shift === 'morning' ? 'सुबह' : 'शाम'}</span></p>
+                                    <p>मात्रा (लीटर): <span className="text-black">{printData.record.liter} L</span></p>
+                                    <p>फैट (Fat): <span className="text-black">{printData.record.fat}</span></p>
+                                    <p>रेट (₹/L): <span className="text-black">₹{printData.record.rate}</span></p>
+                                </div>
+                                <div className="mt-6 pt-4 border-t-2 border-dashed border-gray-400">
+                                    <p className="text-2xl font-black text-right">कुल राशि: <span style={{color: appColor}}>₹{printData.record.total}</span></p>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* Print: Monthly Report */}
+                        {printData.type === 'milk_month' && (
+                            <div className="mt-4">
+                                <h3 className="text-xl font-bold mb-4 border-b-2 pb-2">पूरे महीने का रिकॉर्ड</h3>
+                                <table className="w-full text-left border-collapse text-sm">
+                                    <thead>
+                                        <tr className="bg-gray-200">
+                                            <th className="p-2 border border-gray-400">तारीख</th>
+                                            <th className="p-2 border border-gray-400">समय</th>
+                                            <th className="p-2 border border-gray-400">लीटर</th>
+                                            <th className="p-2 border border-gray-400">फैट</th>
+                                            <th className="p-2 border border-gray-400 text-right">राशि (₹)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {printData.records.map(r => (
+                                            <tr key={r.id}>
+                                                <td className="p-2 border border-gray-400">{new Date(r.date).toLocaleDateString('en-IN')}</td>
+                                                <td className="p-2 border border-gray-400">{r.shift === 'morning' ? 'सुबह' : 'शाम'}</td>
+                                                <td className="p-2 border border-gray-400">{r.liter}</td>
+                                                <td className="p-2 border border-gray-400">{r.fat}</td>
+                                                <td className="p-2 border border-gray-400 text-right font-bold">₹{r.total}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+
+                        {/* Print: Expense Report */}
+                        {printData.type === 'expense_report' && (
+                            <div className="mt-4">
+                                <h3 className="text-xl font-bold mb-4 border-b-2 border-gray-800 pb-2 flex justify-between items-center">
+                                    <span>{printData.reportTitle} - <span style={{color: appColor}}>{printData.profileName}</span></span>
+                                    <span className="text-sm text-gray-500">({printData.periodLabel})</span>
+                                </h3>
+                                <table className="w-full text-left border-collapse mt-4 text-sm">
+                                    <thead>
+                                        <tr className="bg-gray-200">
+                                            <th className="p-2 border border-gray-400">तारीख</th>
+                                            <th className="p-2 border border-gray-400">विवरण (क्या खर्च हुआ)</th>
+                                            <th className="p-2 border border-gray-400 text-right">खर्च / जमा (₹)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {printData.data.map(r => (
+                                            <tr key={r.id}>
+                                                <td className="p-2 border border-gray-400">{new Date(r.date).toLocaleDateString('en-IN')}</td>
+                                                <td className="p-2 border border-gray-400">
+                                                    {r.bags !== undefined ? (r.bags > 0 ? `${r.bags} बैग माल आया` : (r.note || 'पैसे चुकाए / जमा किए')) : ''}
+                                                    {r.feedKg !== undefined ? `फीड: ${r.feedKg}Kg @ ₹${r.feedRate}/Kg${r.otherNote ? ` | अन्य: ${r.otherNote}` : ''}` : ''}
+                                                    {r.morningM !== undefined ? `सुबह: ${r.morningM}L, शाम: ${r.eveningM}L @ ₹${r.milkRate}/L` : ''}
+                                                    {r.note !== undefined && r.bags === undefined && r.feedKg === undefined && r.morningM === undefined ? `${r.note} ${r.qty ? `(मात्रा: ${r.qty})` : ''}` : ''}
+                                                </td>
+                                                <td className="p-2 border border-gray-400 text-right font-bold">
+                                                    {r.paid > 0 && (!r.totalCost || r.totalCost === 0) ? <span className="text-green-600">जमा: ₹{r.paid}</span> : 
+                                                     `₹${
+                                                        r.totalCost !== undefined ? r.totalCost :
+                                                        (r.feedKg !== undefined ? ((parseFloat(r.feedKg) * parseFloat(r.feedRate)) + parseFloat(r.otherCost || 0)).toFixed(2) :
+                                                        (r.morningM !== undefined ? ((parseFloat(r.morningM) + parseFloat(r.eveningM)) * parseFloat(r.milkRate)).toFixed(2) :
+                                                        r.amount))
+                                                    }`}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                    <tfoot>
+                                        <tr className="bg-gray-100 font-black text-base">
+                                            <td colSpan="2" className="p-2 border border-gray-400 text-right">कुल खर्च:</td>
+                                            <td className="p-2 border border-gray-400 text-right text-red-600">
+                                                ₹{printData.data.reduce((sum, r) => {
+                                                    if (r.paid > 0 && (!r.totalCost || r.totalCost === 0)) return sum;
+                                                    let amt = r.totalCost !== undefined ? r.totalCost :
+                                                            (r.feedKg !== undefined ? ((parseFloat(r.feedKg) * parseFloat(r.feedRate)) + parseFloat(r.otherCost || 0)) :
+                                                            (r.morningM !== undefined ? ((parseFloat(r.morningM) + parseFloat(r.eveningM)) * parseFloat(r.milkRate)) :
+                                                            (r.amount !== undefined ? r.amount : 0)));
+                                                    return sum + (parseFloat(amt) || 0);
+                                                }, 0).toFixed(2)}
+                                            </td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                        )}
+                        
+                        <div className="mt-8 text-center text-sm text-gray-500 border-t pt-4">
+                            यह रिपोर्ट डेयरी फार्म मैनेजर ऐप द्वारा जेनरेट की गई है।
+                        </div>
+                    </div>
+                );
+            }
+
+            // Main UI
+            return (
+                <div className="app-container">
+                    {/* Header */}
+                    <div className="p-4 text-white shadow-md rounded-b-2xl mb-2 flex justify-between items-center z-10" style={{backgroundColor: appColor}}>
+                        <h1 className="text-2xl font-black tracking-wide flex items-center gap-2">
+                            <i className="fas fa-cow"></i> {data.settings.farmName}
+                        </h1>
+                    </div>
+
+                    {/* Main Content Area */}
+                    <div className="flex-1 overflow-y-auto p-4 pb-24">
+                        {activeTab === 'home' && <Dashboard data={data} saveData={saveData} appColor={appColor} />}
+                        {activeTab === 'records' && <Records data={data} saveData={saveData} appColor={appColor} onPrint={triggerPrint} />}
+                        {activeTab === 'ledger' && <Ledger data={data} saveData={saveData} appColor={appColor} />}
+                        {activeTab === 'expenses' && <Expenses data={data} saveData={saveData} appColor={appColor} onPrint={triggerPrint} />}
+                        {activeTab === 'settings' && <Settings data={data} saveData={saveData} appColor={appColor} />}
+                    </div>
+
+                    {/* Bottom Navigation */}
+                    <div className="fixed bottom-0 w-full bg-white border-t border-gray-200 flex justify-around p-2 pb-4 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] z-20">
+                        <NavBtn icon="fa-home" label="डैशबोर्ड" active={activeTab === 'home'} onClick={() => setActiveTab('home')} color={appColor} />
+                        <NavBtn icon="fa-book" label="रिकॉर्ड" active={activeTab === 'records'} onClick={() => setActiveTab('records')} color={appColor} />
+                        <NavBtn icon="fa-book-open" label="खाता" active={activeTab === 'ledger'} onClick={() => setActiveTab('ledger')} color={appColor} />
+                        <NavBtn icon="fa-wallet" label="खर्च" active={activeTab === 'expenses'} onClick={() => setActiveTab('expenses')} color={appColor} />
+                        <NavBtn icon="fa-cog" label="सेटिंग्स" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} color={appColor} />
+                    </div>
+                </div>
+            );
+        }
+
+        // Navigation Button Component
+        function NavBtn({icon, label, active, onClick, color}) {
+            return (
+                <button onClick={onClick} className={`flex flex-col items-center w-16 transition-all ${active ? 'transform -translate-y-2' : ''}`}>
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center text-xl mb-1 shadow-md ${active ? 'text-white' : 'bg-gray-100 text-gray-500'}`}
+                         style={active ? {backgroundColor: color} : {}}>
+                        <i className={`fas ${icon}`}></i>
+                    </div>
+                    <span className={`text-[10px] font-bold ${active ? '' : 'text-gray-500'}`} style={active ? {color: color} : {}}>{label}</span>
+                </button>
+            );
+        }
+
+        // 1. DASHBOARD COMPONENT
+        function Dashboard({data, saveData, appColor}) {
+            const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+            const [shift, setShift] = useState('morning');
+            const [liter, setLiter] = useState('');
+            const [fat, setFat] = useState('');
+            const [rate, setRate] = useState('');
+
+            // Calculations
+            const currentMonth = new Date().getMonth();
+            const currentYear = new Date().getFullYear();
+            
+            const currMonthRecords = data.milkRecords.filter(r => {
+                const d = new Date(r.date);
+                return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+            });
+            const currMilk = currMonthRecords.reduce((sum, r) => sum + parseFloat(r.liter), 0);
+            const currAmt = currMonthRecords.reduce((sum, r) => sum + parseFloat(r.total), 0);
+
+            const lastMonthRecords = data.milkRecords.filter(r => {
+                const d = new Date(r.date);
+                let lm = currentMonth - 1;
+                let ly = currentYear;
+                if (lm < 0) { lm = 11; ly -= 1; }
+                return d.getMonth() === lm && d.getFullYear() === ly;
+            });
+            const lastMilk = lastMonthRecords.reduce((sum, r) => sum + parseFloat(r.liter), 0);
+            const lastAmt = lastMonthRecords.reduce((sum, r) => sum + parseFloat(r.total), 0);
+
+            const handleAddMilk = (e) => {
+                e.preventDefault();
+                if (!liter || !rate) return;
+                const total = (parseFloat(liter) * parseFloat(rate)).toFixed(2);
+                const newRecord = {
+                    id: Date.now().toString(),
+                    date, shift, liter, fat, rate, total
+                };
+                saveData({
+                    ...data,
+                    milkRecords: [newRecord, ...data.milkRecords]
+                });
+                setLiter(''); setFat(''); setRate('');
+            };
+
+            return (
+                <div className="space-y-6 animate-fade-in">
+                    {/* Stats Boxes */}
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-2xl shadow-sm border border-blue-200">
+                            <h3 className="text-blue-800 font-bold text-sm mb-1 flex justify-between">इस महीने <i className="fas fa-calendar-day"></i></h3>
+                            <p className="text-2xl font-black text-blue-900">{currMilk.toFixed(1)} <span className="text-sm font-normal">लीटर</span></p>
+                            <p className="text-lg font-bold text-green-700">₹{currAmt.toFixed(0)}</p>
+                        </div>
+                        <div className="bg-gradient-to-br from-gray-50 to-gray-100 p-4 rounded-2xl shadow-sm border border-gray-200">
+                            <h3 className="text-gray-600 font-bold text-sm mb-1 flex justify-between">पिछले महीने <i className="fas fa-history"></i></h3>
+                            <p className="text-2xl font-black text-gray-800">{lastMilk.toFixed(1)} <span className="text-sm font-normal">लीटर</span></p>
+                            <p className="text-lg font-bold text-gray-600">₹{lastAmt.toFixed(0)}</p>
+                        </div>
+                    </div>
+
+                    {/* Add Milk Form */}
+                    <div className="bg-white p-5 rounded-2xl shadow-lg border border-gray-100">
+                        <h2 className="text-xl font-black mb-4 border-b pb-2 flex items-center gap-2" style={{color: appColor}}>
+                            <i className="fas fa-plus-circle"></i> दूध अपडेट करें
+                        </h2>
+                        <form onSubmit={handleAddMilk} className="space-y-4">
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-600 mb-1">तारीख</label>
+                                    <input type="date" value={date} onChange={e=>setDate(e.target.value)} className="w-full border p-2 rounded-xl bg-gray-50 outline-none focus:ring-2" required />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-600 mb-1">समय</label>
+                                    <select value={shift} onChange={e=>setShift(e.target.value)} className="w-full border p-2 rounded-xl bg-gray-50 outline-none focus:ring-2 font-bold">
+                                        <option value="morning">☀️ सुबह</option>
+                                        <option value="evening">🌙 शाम</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-3 gap-3">
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-600 mb-1">लीटर</label>
+                                    <input type="number" step="0.1" value={liter} onChange={e=>setLiter(e.target.value)} placeholder="0.0" className="w-full border p-2 rounded-xl bg-gray-50 text-center font-bold outline-none" required />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-600 mb-1">फैट</label>
+                                    <input type="number" step="0.1" value={fat} onChange={e=>setFat(e.target.value)} placeholder="0.0" className="w-full border p-2 rounded-xl bg-gray-50 text-center outline-none" />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-600 mb-1">रेट (₹)</label>
+                                    <input type="number" step="0.1" value={rate} onChange={e=>setRate(e.target.value)} placeholder="₹0" className="w-full border p-2 rounded-xl bg-gray-50 text-center font-bold outline-none" required />
+                                </div>
+                            </div>
+                            <div className="bg-gray-100 p-3 rounded-xl flex justify-between items-center border border-gray-200">
+                                <span className="font-bold text-gray-700">कुल राशि:</span>
+                                <span className="font-black text-xl text-green-700">₹{(liter && rate) ? (liter * rate).toFixed(2) : '0.00'}</span>
+                            </div>
+                            <button type="submit" className="w-full text-white font-bold p-3 rounded-xl btn-3d" style={{backgroundColor: appColor}}>
+                                सेव करें <i className="fas fa-check-circle ml-1"></i>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            );
+        }
+
+        // 2. RECORDS COMPONENT
+        function Records({data, saveData, appColor, onPrint}) {
+            const [amountReceived, setAmountReceived] = useState('');
+            const [editMode, setEditMode] = useState(false);
+            const [editForm, setEditForm] = useState({});
+
+            const handleDelete = (id) => {
+                saveData({
+                    ...data,
+                    milkRecords: data.milkRecords.filter(r => r.id !== id)
+                });
+            };
+
+            const handleSaveEdit = (e) => {
+                e.preventDefault();
+                const total = (parseFloat(editForm.liter) * parseFloat(editForm.rate)).toFixed(2);
+                const updatedRecord = { ...editForm, total };
+                saveData({
+                    ...data,
+                    milkRecords: data.milkRecords.map(r => r.id === updatedRecord.id ? updatedRecord : r)
+                });
+                setEditMode(false);
+            };
+
+            const handlePrintSlip = (record) => {
+                onPrint({ record }, 'milk_slip');
+            };
+
+            const handlePrintMonth = () => {
+                const currentMonth = new Date().getMonth();
+                const currentYear = new Date().getFullYear();
+                const currMonthRecords = data.milkRecords.filter(r => {
+                    const d = new Date(r.date);
+                    return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+                });
+                onPrint({ records: currMonthRecords }, 'milk_month');
+            };
+
+            const totalMilkValue = data.milkRecords.reduce((sum, r) => sum + parseFloat(r.total), 0);
+            const received = data.wallet?.received || 0;
+            const balance = totalMilkValue - received;
+
+            const handleAddMoney = () => {
+                if(!amountReceived) return;
+                saveData({
+                    ...data,
+                    wallet: { received: received + parseFloat(amountReceived) }
+                });
+                setAmountReceived('');
+            };
+
+            const handleResetMoney = () => {
+                saveData({
+                    ...data,
+                    wallet: { received: 0 }
+                });
+            };
+
+            return (
+                <div className="space-y-4 animate-fade-in">
+                    {/* Wallet Section */}
+                    <div className="bg-white p-4 rounded-xl shadow-sm border-l-4" style={{borderColor: appColor}}>
+                        <h3 className="font-bold text-gray-700 mb-2 flex items-center justify-between">
+                            <span><i className="fas fa-wallet text-xl mr-2"></i> पैसों का हिसाब (दूध)</span>
+                            <span className="text-xs bg-gray-100 p-1 rounded">कुल दूध: ₹{totalMilkValue.toFixed(0)}</span>
+                        </h3>
+                        <div className="flex justify-between items-center mb-3 bg-gray-50 p-3 rounded-lg border">
+                            <div>
+                                <p className="text-xs text-gray-500 font-bold">लेने बाकी / एडवांस</p>
+                                {balance > 0 ? (
+                                    <p className="text-xl font-black text-red-600">+ ₹{Math.abs(balance).toFixed(2)} (बाकी)</p>
+                                ) : balance < 0 ? (
+                                    <p className="text-xl font-black text-green-600">- ₹{Math.abs(balance).toFixed(2)} (एडवांस जमा)</p>
+                                ) : (
+                                    <p className="text-xl font-black text-gray-600">₹0 (हिसाब बराबर)</p>
+                                )}
+                            </div>
+                            <div className="text-right">
+                                <p className="text-xs text-gray-500 font-bold">कुल आ गए</p>
+                                <p className="text-lg font-bold text-blue-700">₹{received.toFixed(0)}</p>
+                            </div>
+                        </div>
+                        <div className="flex gap-2">
+                            <input type="number" value={amountReceived} onChange={e=>setAmountReceived(e.target.value)} placeholder="पैसे आए (₹)" className="border p-2 rounded-lg flex-1 outline-none font-bold" />
+                            <button onClick={handleAddMoney} className="bg-green-600 text-white px-4 rounded-lg font-bold btn-3d">जमा</button>
+                            <button onClick={handleResetMoney} className="bg-red-100 text-red-600 px-3 rounded-lg font-bold border border-red-200"><i className="fas fa-undo"></i> जीरो</button>
+                        </div>
+                    </div>
+
+                    {/* Records Header */}
+                    <div className="flex justify-between items-center">
+                        <h2 className="text-xl font-black text-gray-800">दूध का इतिहास</h2>
+                        <button onClick={handlePrintMonth} className="bg-red-50 text-red-600 px-3 py-1.5 rounded-lg border font-bold text-sm shadow-sm btn-3d"><i className="fas fa-file-pdf"></i> महीने की PDF</button>
+                    </div>
+
+                    {/* Edit Form */}
+                    {editMode && (
+                        <form onSubmit={handleSaveEdit} className="bg-blue-50 p-4 rounded-xl shadow-sm border border-blue-200 space-y-3">
+                            <h3 className="font-bold text-blue-800 border-b border-blue-200 pb-2"><i className="fas fa-edit"></i> रिकॉर्ड संशोधित करें</h3>
+                            <div className="grid grid-cols-2 gap-2">
+                                <input type="date" value={editForm.date} onChange={e=>setEditForm({...editForm, date: e.target.value})} className="border p-2 rounded-lg" required />
+                                <select value={editForm.shift} onChange={e=>setEditForm({...editForm, shift: e.target.value})} className="border p-2 rounded-lg font-bold">
+                                    <option value="morning">सुबह</option>
+                                    <option value="evening">शाम</option>
+                                </select>
+                                <input type="number" step="0.1" value={editForm.liter} onChange={e=>setEditForm({...editForm, liter: e.target.value})} placeholder="लीटर" className="border p-2 rounded-lg font-bold" required />
+                                <input type="number" step="0.1" value={editForm.rate} onChange={e=>setEditForm({...editForm, rate: e.target.value})} placeholder="रेट (₹)" className="border p-2 rounded-lg font-bold" required />
+                                <input type="number" step="0.1" value={editForm.fat} onChange={e=>setEditForm({...editForm, fat: e.target.value})} placeholder="फैट" className="border p-2 rounded-lg col-span-2" />
+                            </div>
+                            <div className="flex gap-2">
+                                <button type="submit" className="flex-1 bg-blue-600 text-white font-bold p-2 rounded-lg btn-3d">अपडेट करें</button>
+                                <button type="button" onClick={()=>setEditMode(false)} className="bg-gray-400 text-white px-4 font-bold rounded-lg btn-3d">रद्द</button>
+                            </div>
+                        </form>
+                    )}
+
+                    {/* List */}
+                    <div className="space-y-3">
+                        {data.milkRecords.map(r => (
+                            <div key={r.id} className="bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex flex-col gap-2">
+                                <div className="flex justify-between items-center border-b pb-2">
+                                    <div className="font-bold text-gray-700">
+                                        <i className="fas fa-calendar-alt text-gray-400 mr-1"></i> {new Date(r.date).toLocaleDateString('en-IN')} 
+                                        <span className={`ml-2 text-xs px-2 py-1 rounded-full ${r.shift==='morning'?'bg-yellow-100 text-yellow-700':'bg-indigo-100 text-indigo-700'}`}>
+                                            {r.shift==='morning'?'सुबह':'शाम'}
+                                        </span>
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <button onClick={() => handlePrintSlip(r)} className="text-red-500 bg-red-50 w-8 h-8 rounded-full border flex items-center justify-center btn-3d"><i className="fas fa-file-pdf"></i></button>
+                                        <button onClick={() => {setEditForm(r); setEditMode(true); window.scrollTo(0,0);}} className="text-blue-500 bg-blue-50 w-8 h-8 rounded-full border flex items-center justify-center btn-3d"><i className="fas fa-edit"></i></button>
+                                        <button onClick={() => handleDelete(r.id)} className="text-red-500 bg-gray-50 w-8 h-8 rounded-full border flex items-center justify-center btn-3d"><i className="fas fa-trash"></i></button>
+                                    </div>
+                                </div>
+                                <div className="flex justify-between items-end">
+                                    <div className="text-sm text-gray-600 font-bold space-y-1">
+                                        <p>मात्रा: <span className="text-black">{r.liter} L</span> | फैट: <span className="text-black">{r.fat || '-'}</span></p>
+                                        <p>रेट: <span className="text-black">₹{r.rate}/L</span></p>
+                                    </div>
+                                    <div className="text-xl font-black text-green-700">₹{r.total}</div>
+                                </div>
+                            </div>
+                        ))}
+                        {data.milkRecords.length === 0 && <p className="text-center text-gray-500 py-10 font-bold">कोई रिकॉर्ड नहीं है</p>}
+                    </div>
+                </div>
+            );
+        }
+
+        // 3. LEDGER COMPONENT (Udhar / Khata)
+        function Ledger({data, saveData, appColor}) {
+            const [name, setName] = useState('');
+            const [activePersonId, setActivePersonId] = useState(null);
+            
+            const handleAddPerson = (e) => {
+                e.preventDefault();
+                if(!name) return;
+                const newPerson = { id: Date.now().toString(), name, transactions: [] };
+                saveData({ ...data, ledger: [...data.ledger, newPerson] });
+                setName('');
+            };
+
+            const handleDeletePerson = (id) => {
+                saveData({ ...data, ledger: data.ledger.filter(p => p.id !== id) });
+            };
+
+            // Totals
+            let totalToGive = 0;
+            let totalToTake = 0;
+            data.ledger.forEach(p => {
+                const bal = p.transactions.reduce((sum, t) => sum + (t.type === 'give' ? -parseFloat(t.amount) : parseFloat(t.amount)), 0);
+                if (bal > 0) totalToTake += bal;
+                else totalToGive += Math.abs(bal);
+            });
+
+            if (activePersonId) {
+                const person = data.ledger.find(p => p.id === activePersonId);
+                return <LedgerDetail person={person} onBack={() => setActivePersonId(null)} data={data} saveData={saveData} appColor={appColor} onDelete={() => { handleDeletePerson(person.id); setActivePersonId(null); }} />
+            }
+
+            return (
+                <div className="space-y-4 animate-fade-in">
+                    {/* Top Summary */}
+                    <div className="grid grid-cols-2 gap-3 mb-4">
+                        <div className="bg-red-50 p-3 rounded-xl border border-red-200 text-center">
+                            <p className="text-xs font-bold text-red-600 mb-1">कुल देने हैं (कर्ज)</p>
+                            <p className="text-xl font-black text-red-700">₹{totalToGive.toFixed(0)}</p>
+                        </div>
+                        <div className="bg-green-50 p-3 rounded-xl border border-green-200 text-center">
+                            <p className="text-xs font-bold text-green-600 mb-1">कुल लेने हैं (उधार)</p>
+                            <p className="text-xl font-black text-green-700">₹{totalToTake.toFixed(0)}</p>
+                        </div>
+                    </div>
+
+                    <form onSubmit={handleAddPerson} className="flex gap-2">
+                        <input type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="नया व्यक्ति / ग्राहक का नाम" className="border p-3 rounded-xl flex-1 outline-none font-bold bg-gray-50" required />
+                        <button type="submit" className="text-white px-4 rounded-xl font-bold btn-3d" style={{backgroundColor: appColor}}><i className="fas fa-plus"></i></button>
+                    </form>
+
+                    <div className="space-y-2 mt-4">
+                        {data.ledger.map(p => {
+                            const bal = p.transactions.reduce((sum, t) => sum + (t.type === 'give' ? -parseFloat(t.amount) : parseFloat(t.amount)), 0);
+                            return (
+                                <div key={p.id} onClick={() => setActivePersonId(p.id)} className="bg-white p-4 rounded-xl border shadow-sm flex justify-between items-center cursor-pointer hover:bg-gray-50">
+                                    <div className="font-bold text-gray-800 text-lg flex items-center gap-2">
+                                        <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-800"><i className="fas fa-user"></i></div>
+                                        {p.name}
+                                    </div>
+                                    <div className="text-right">
+                                        {bal === 0 ? <span className="text-gray-500 font-bold">हिसाब बराबर</span> :
+                                         bal > 0 ? <span className="text-green-600 font-black">+ ₹{bal} (लेने हैं)</span> :
+                                         <span className="text-red-600 font-black">- ₹{Math.abs(bal)} (देने हैं)</span>}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        }
+
+        function LedgerDetail({person, onBack, data, saveData, appColor, onDelete}) {
+            const [amount, setAmount] = useState('');
+            const [note, setNote] = useState('');
+            const [type, setType] = useState('take'); // take = lene hain, give = dene hain
+            const [editingId, setEditingId] = useState(null);
+            const [editDate, setEditDate] = useState(null);
+
+            const handleEditClick = (t) => {
+                setAmount(t.amount);
+                setNote(t.note || '');
+                setType(t.type);
+                setEditDate(t.date);
+                setEditingId(t.id);
+                window.scrollTo(0, 0);
+            };
+
+            const handleAdd = (e) => {
+                e.preventDefault();
+                if(!amount) return;
+                const newT = { id: editingId || Date.now().toString(), amount, note, type, date: editDate || new Date().toISOString() };
+                
+                let updatedTransactions;
+                if(editingId) {
+                    updatedTransactions = person.transactions.map(t => t.id === editingId ? newT : t);
+                } else {
+                    updatedTransactions = [newT, ...person.transactions];
+                }
+
+                const updatedPerson = { ...person, transactions: updatedTransactions };
+                saveData({ ...data, ledger: data.ledger.map(p => p.id === person.id ? updatedPerson : p) });
+                setAmount(''); setNote(''); setEditingId(null); setEditDate(null);
+            };
+
+            const handleDeleteT = (tid) => {
+                const updatedPerson = { ...person, transactions: person.transactions.filter(t => t.id !== tid) };
+                saveData({ ...data, ledger: data.ledger.map(p => p.id === person.id ? updatedPerson : p) });
+            };
+
+            const bal = person.transactions.reduce((sum, t) => sum + (t.type === 'give' ? -parseFloat(t.amount) : parseFloat(t.amount)), 0);
+
+            return (
+                <div className="space-y-4 animate-fade-in">
+                    <div className="flex justify-between items-center mb-2 border-b pb-2">
+                        <button onClick={onBack} className="text-gray-600 font-bold bg-gray-100 px-3 py-1.5 rounded-lg"><i className="fas fa-arrow-left"></i></button>
+                        <h3 className="font-black text-xl text-gray-800">{person.name}</h3>
+                        <button onClick={onDelete} className="text-red-500 bg-red-50 px-3 py-1.5 rounded-lg border text-xs"><i className="fas fa-trash"></i> हटाएँ</button>
+                    </div>
+
+                    <div className="bg-gray-100 p-4 rounded-xl text-center border">
+                        <p className="text-gray-600 font-bold mb-1">कुल हिसाब</p>
+                        {bal === 0 ? <p className="text-2xl font-black text-gray-700">₹0</p> :
+                         bal > 0 ? <p className="text-3xl font-black text-green-700">लेने हैं: ₹{bal}</p> :
+                         <p className="text-3xl font-black text-red-700">देने हैं: ₹{Math.abs(bal)}</p>}
+                    </div>
+
+                    <form onSubmit={handleAdd} className={`p-4 rounded-xl border shadow-sm space-y-3 ${editingId ? 'bg-blue-50 border-blue-200' : 'bg-white'}`}>
+                        {editingId && <p className="text-blue-800 font-bold text-sm mb-1"><i className="fas fa-edit"></i> लेन-देन एडिट करें</p>}
+                        <div className="flex gap-2">
+                            <button type="button" onClick={()=>setType('take')} className={`flex-1 p-2 rounded-lg font-bold border ${type==='take'?'bg-green-100 border-green-500 text-green-700':'bg-gray-50'}`}>मैंने दिए (+)</button>
+                            <button type="button" onClick={()=>setType('give')} className={`flex-1 p-2 rounded-lg font-bold border ${type==='give'?'bg-red-100 border-red-500 text-red-700':'bg-gray-50'}`}>मैंने लिए (-)</button>
+                        </div>
+                        <input type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="रकम (₹)" className="w-full border p-2 rounded-lg bg-white font-bold outline-none" required />
+                        <input type="text" value={note} onChange={e=>setNote(e.target.value)} placeholder="विवरण (किस लिए)" className="w-full border p-2 rounded-lg bg-white outline-none" />
+                        <div className="flex gap-2">
+                            <button type="submit" className="flex-1 text-white font-bold p-3 rounded-lg btn-3d" style={{backgroundColor: appColor}}>{editingId ? 'अपडेट करें' : 'जोड़ें'}</button>
+                            {editingId && <button type="button" onClick={()=>{setEditingId(null); setAmount(''); setNote('');}} className="bg-gray-400 text-white font-bold px-4 rounded-lg btn-3d">रद्द</button>}
+                        </div>
+                    </form>
+
+                    <div className="space-y-2">
+                        {person.transactions.map(t => (
+                            <div key={t.id} className="bg-white p-3 rounded-xl border flex justify-between items-center">
+                                <div>
+                                    <p className="text-xs text-gray-500">{new Date(t.date).toLocaleDateString('en-IN')}</p>
+                                    <p className="font-bold text-gray-800">{t.note || 'नकद'}</p>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                    <span className={`font-black ${t.type==='take'?'text-green-600':'text-red-600'}`}>
+                                        {t.type==='take'?'+':'-'} ₹{t.amount}
+                                    </span>
+                                    <button onClick={()=>handleEditClick(t)} className="text-blue-500 p-1"><i className="fas fa-edit"></i></button>
+                                    <button onClick={()=>handleDeleteT(t.id)} className="text-red-400 p-1"><i className="fas fa-times-circle"></i></button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+
+
+        // 4. EXPENSES COMPONENT
+        function Expenses({data, saveData, appColor, onPrint}) {
+            const [exTab, setExTab] = useState('feed');
+            
+            const tabClass = (tab) => `flex-1 py-2 text-center font-bold text-sm border-b-4 transition-all ${exTab === tab ? 'text-blue-800 border-blue-800 bg-blue-50' : 'text-gray-500 border-transparent'}`;
+
+            return (
+                <div className="space-y-4 h-full flex flex-col">
+                    <div className="flex bg-white rounded-xl shadow-sm border overflow-hidden">
+                        <button onClick={()=>setExTab('feed')} className={tabClass('feed')}>🌾 चारा</button>
+                        <button onClick={()=>setExTab('cows')} className={tabClass('cows')}>🐄 गाय</button>
+                        <button onClick={()=>setExTab('calves')} className={tabClass('calves')}>🐃 बच्चे</button>
+                        <button onClick={()=>setExTab('others')} className={tabClass('others')}>अन्य</button>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto pb-4">
+                        {exTab === 'feed' && <ExpenseProfileManager category="feed" data={data} saveData={saveData} appColor={appColor} title="चारा / फीड" icon="🌾" onPrint={onPrint} />}
+                        {exTab === 'cows' && <ExpenseProfileManager category="cows" data={data} saveData={saveData} appColor={appColor} title="गायों का खर्च" icon="🐄" onPrint={onPrint} />}
+                        {exTab === 'calves' && <ExpenseProfileManager category="calves" data={data} saveData={saveData} appColor={appColor} title="बच्चों का दूध/खर्च" icon="🐃" onPrint={onPrint} />}
+                        {exTab === 'others' && <ExpenseProfileManager category="others" data={data} saveData={saveData} appColor={appColor} title="अन्य खर्च" icon="📝" onPrint={onPrint} />}
+                    </div>
+                </div>
+            );
+        }
+
+        // Generic Profile Manager for Expenses
+        function ExpenseProfileManager({category, data, saveData, appColor, title, icon, onPrint}) {
+            const [name, setName] = useState('');
+            const [activeId, setActiveId] = useState(null);
+
+            const profiles = data.expenses[category] || [];
+
+            const handleAdd = (e) => {
+                e.preventDefault();
+                if(!name) return;
+                const newProfile = { id: Date.now().toString(), name, history: [], settings: {} };
+                saveData({
+                    ...data,
+                    expenses: { ...data.expenses, [category]: [...profiles, newProfile] }
+                });
+                setName('');
+            };
+
+            const handleUpdate = (updatedProfile) => {
+                saveData({
+                    ...data,
+                    expenses: { ...data.expenses, [category]: profiles.map(p => p.id === updatedProfile.id ? updatedProfile : p) }
+                });
+            };
+
+            const handleDelete = (id) => {
+                saveData({
+                    ...data,
+                    expenses: { ...data.expenses, [category]: profiles.filter(p => p.id !== id) }
+                });
+                setActiveId(null);
+            };
+
+            if (activeId) {
+                const profile = profiles.find(p => p.id === activeId);
+                if (category === 'feed') return <FeedProfileDetail profile={profile} onUpdate={handleUpdate} onBack={()=>setActiveId(null)} onDelete={()=>handleDelete(profile.id)} appColor={appColor} onPrint={onPrint} />;
+                if (category === 'cows') return <CowProfileDetail profile={profile} onUpdate={handleUpdate} onBack={()=>setActiveId(null)} onDelete={()=>handleDelete(profile.id)} appColor={appColor} onPrint={onPrint} />;
+                if (category === 'calves') return <CalfProfileDetail profile={profile} onUpdate={handleUpdate} onBack={()=>setActiveId(null)} onDelete={()=>handleDelete(profile.id)} appColor={appColor} onPrint={onPrint} />;
+                if (category === 'others') return <OtherProfileDetail profile={profile} onUpdate={handleUpdate} onBack={()=>setActiveId(null)} onDelete={()=>handleDelete(profile.id)} appColor={appColor} onPrint={onPrint} />;
+            }
+
+            return (
+                <div className="space-y-4 animate-fade-in">
+                    <form onSubmit={handleAdd} className="flex gap-2">
+                        <input type="text" value={name} onChange={e=>setName(e.target.value)} placeholder={`नया ${title} जोड़ें...`} className="border p-3 rounded-xl flex-1 bg-white outline-none font-bold" required />
+                        <button type="submit" className="text-white px-4 rounded-xl font-bold btn-3d" style={{backgroundColor: appColor}}><i className="fas fa-plus"></i></button>
+                    </form>
+
+                    <div className="grid grid-cols-2 gap-3">
+                        {profiles.map(p => (
+                            <div key={p.id} onClick={() => setActiveId(p.id)} className="bg-white p-4 rounded-xl border shadow-sm text-center cursor-pointer hover:bg-gray-50 flex flex-col items-center justify-center btn-3d">
+                                <span className="text-3xl mb-2">{icon}</span>
+                                <span className="font-bold text-gray-800">{p.name}</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+
+        // --- SPECIFIC EXPENSE DETAILS ---
+
+        function FeedProfileDetail({profile, onUpdate, onBack, onDelete, appColor, onPrint}) {
+            const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+            const [bagsInput, setBagsInput] = useState('');
+            const [costInput, setCostInput] = useState('');
+            const [paidInput, setPaidInput] = useState('');
+            const [editingId, setEditingId] = useState(null);
+            
+            // Calculator state
+            const [dailyConsumption, setDailyConsumption] = useState(profile.settings?.dailyConsumption || '');
+            const [printPeriod, setPrintPeriod] = useState('month');
+
+            const handleEditClick = (r) => {
+                setDate(r.date ? new Date(r.date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]);
+                setBagsInput(r.bags || '');
+                setCostInput(r.totalCost || '');
+                setPaidInput(r.paid || '');
+                setEditingId(r.id);
+                window.scrollTo(0,0);
+            };
+
+            const handlePrintClick = () => {
+                const today = new Date();
+                const filtered = (profile.history || []).filter(r => {
+                    if (!r.date) return true;
+                    const d = new Date(r.date);
+                    if (printPeriod === 'today') return d.toDateString() === today.toDateString();
+                    if (printPeriod === 'month') return d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
+                    if (printPeriod === 'year') return d.getFullYear() === today.getFullYear();
+                    return true;
+                });
+                
+                // Sort by date desc
+                const sorted = [...filtered].sort((a,b) => new Date(b.date) - new Date(a.date));
+                
+                let periodLabel = 'महीने का';
+                if(printPeriod === 'today') periodLabel = 'आज का';
+                if(printPeriod === 'year') periodLabel = 'साल का';
+                if(printPeriod === 'all') periodLabel = 'पूरा रिकॉर्ड';
+
+                onPrint({ data: sorted, reportTitle: 'फीड / चारे का रिकॉर्ड', profileName: profile.name, periodLabel }, 'expense_report');
+            };
+
+            const handleAddStock = (e) => {
+                e.preventDefault();
+                if(!costInput && !paidInput && !bagsInput) return;
+                
+                const newRecord = {
+                    id: editingId || Date.now().toString(),
+                    date,
+                    bags: parseInt(bagsInput) || 0,
+                    totalCost: parseFloat(costInput) || 0,
+                    paid: parseFloat(paidInput) || 0
+                };
+
+                const updatedHistory = editingId 
+                    ? (profile.history || []).map(r => r.id === editingId ? newRecord : r)
+                    : [newRecord, ...(profile.history || [])];
+
+                onUpdate({ ...profile, history: updatedHistory });
+                setBagsInput(''); setCostInput(''); setPaidInput(''); setEditingId(null);
+                setDate(new Date().toISOString().split('T')[0]);
+            };
+
+            const handleDeleteRecord = (id) => {
+                onUpdate({ ...profile, history: (profile.history || []).filter(r => r.id !== id) });
+            };
+
+            const saveSettings = () => {
+                onUpdate({ ...profile, settings: { ...profile.settings, dailyConsumption } });
+            };
+
+            const totalBags = (profile.history || []).reduce((s, r) => s + (r.bags || 0), 0);
+            const totalCost = (profile.history || []).reduce((s, r) => s + (r.totalCost || 0), 0);
+            const totalPaid = (profile.history || []).reduce((s, r) => s + (r.paid || 0), 0);
+            const due = totalCost - totalPaid;
+
+            // Calculate days remaining
+            let daysRemainingText = "रोज़ का खर्च सेट करें";
+            if (dailyConsumption > 0 && totalBags > 0) {
+                // Assuming 1 bag = 50kg for calculation. Let's ask user or assume standard.
+                // For simplicity, let's assume total stock is just based on a standard if they use bags, or let them just enter Kg.
+                // Since they requested a simple "kitne din chalegi", let's assume 'bags' meant total Kg or we just divide.
+                // Let's treat 'bags' as kg for the calculator if dailyConsumption is in Kg.
+                const days = (totalBags * 50) / dailyConsumption; // Assuming 50kg per bag
+                if(isFinite(days)) {
+                    const endDate = new Date();
+                    endDate.setDate(endDate.getDate() + days);
+                    daysRemainingText = `${days.toFixed(1)} दिन (${endDate.toLocaleDateString('en-IN')})`;
+                }
+            }
+
+            return (
+                <div className="space-y-4 animate-fade-in">
+                    <div className="flex justify-between items-center mb-2 border-b pb-2">
+                        <button onClick={onBack} className="text-gray-600 font-bold bg-gray-100 px-3 py-1.5 rounded-lg"><i className="fas fa-arrow-left"></i> वापस</button>
+                        <h3 className="font-black text-xl text-gray-800">🌾 {profile.name}</h3>
+                        <div className="flex gap-2">
+                            <select value={printPeriod} onChange={e=>setPrintPeriod(e.target.value)} className="border p-1 rounded-lg text-xs font-bold outline-none">
+                                <option value="today">आज</option>
+                                <option value="month">महीना</option>
+                                <option value="year">साल</option>
+                                <option value="all">पूरा</option>
+                            </select>
+                            <button onClick={handlePrintClick} className="text-red-600 bg-red-50 px-2 py-1 rounded-lg border font-bold text-xs"><i className="fas fa-file-pdf"></i></button>
+                            <button onClick={onDelete} className="text-red-500 bg-red-50 px-2 py-1 rounded-lg border"><i className="fas fa-trash"></i></button>
+                        </div>
+                    </div>
+
+                    {/* Stock & Ledger Summary */}
+                    <div className="grid grid-cols-2 gap-3 mb-2">
+                        <div className="bg-blue-50 p-3 rounded-xl border border-blue-200 text-center">
+                            <p className="text-xs font-bold text-blue-600">कुल माल आया</p>
+                            <p className="text-xl font-black text-blue-800">{totalBags} <span className="text-sm">बैग</span></p>
+                            <p className="text-xs font-bold mt-1 text-gray-600">कुल बिल: ₹{totalCost}</p>
+                        </div>
+                        <div className="bg-red-50 p-3 rounded-xl border border-red-200 text-center">
+                            <p className="text-xs font-bold text-red-600">बाकी पैसे</p>
+                            <p className="text-xl font-black text-red-800">₹{due}</p>
+                            <p className="text-xs font-bold mt-1 text-green-700">चुका दिए: ₹{totalPaid}</p>
+                        </div>
+                    </div>
+
+                    <form onSubmit={handleAddStock} className={`${editingId ? 'bg-blue-50 border-blue-200' : 'bg-gray-50 border-gray-200'} p-4 rounded-xl border shadow-sm space-y-3`}>
+                        <p className={`font-bold text-sm border-b pb-1 ${editingId ? 'text-blue-800' : 'text-gray-700'}`}>
+                            {editingId ? <><i className="fas fa-edit"></i> स्टॉक/पैसे एडिट करें</> : 'नया स्टॉक / पैसे जमा करें'}
+                        </p>
+                        <input type="date" value={date} onChange={e=>setDate(e.target.value)} className="w-full border p-2 rounded-lg bg-white outline-none" required />
+                        <div className="grid grid-cols-3 gap-2">
+                            <input type="number" value={bagsInput} onChange={e=>setBagsInput(e.target.value)} placeholder="कितने बैग?" className="border p-2 rounded-lg bg-white outline-none font-bold" />
+                            <input type="number" value={costInput} onChange={e=>setCostInput(e.target.value)} placeholder="बिल (₹)" className="border p-2 rounded-lg bg-white outline-none font-bold" />
+                            <input type="number" value={paidInput} onChange={e=>setPaidInput(e.target.value)} placeholder="जमा किए (₹)" className="border p-2 rounded-lg bg-white outline-none font-bold text-green-700" />
+                        </div>
+                        <div className="flex gap-2">
+                            <button type="submit" className="flex-1 text-white font-bold p-3 rounded-lg btn-3d" style={{backgroundColor: appColor}}>{editingId ? 'अपडेट करें' : 'ऐड करें'}</button>
+                            {editingId && <button type="button" onClick={()=>{setEditingId(null); setBagsInput(''); setCostInput(''); setPaidInput('');}} className="bg-gray-400 text-white font-bold px-4 rounded-lg btn-3d">रद्द</button>}
+                        </div>
+                    </form>
+
+                    {/* Calculator at bottom of forms */}
+                    <div className="bg-yellow-50 border border-yellow-300 p-4 rounded-xl">
+                        <p className="font-bold text-yellow-800 mb-2 text-sm"><i className="fas fa-calculator"></i> चारा कब तक चलेगा?</p>
+                        <div className="flex gap-2 items-center">
+                            <input type="number" value={dailyConsumption} onChange={e=>setDailyConsumption(e.target.value)} placeholder="रोज़ का खर्च (Kg)" className="border p-2 rounded-lg flex-1 outline-none font-bold bg-white" />
+                            <button onClick={saveSettings} className="bg-yellow-600 text-white px-4 py-2 rounded-lg font-bold">सेट</button>
+                        </div>
+                        {dailyConsumption && <p className="mt-2 font-black text-gray-800 text-center bg-white p-2 rounded border border-yellow-200">{daysRemainingText}</p>}
+                    </div>
+
+                    <div className="space-y-2 mt-4">
+                        <p className="font-bold text-gray-600 border-b pb-1">इतिहास</p>
+                        {(profile.history || []).map(r => (
+                            <div key={r.id} className="bg-white p-3 rounded-xl border flex justify-between items-center">
+                                <div>
+                                    <p className="text-xs text-gray-500 font-bold">{new Date(r.date).toLocaleDateString('en-IN')}</p>
+                                    <p className="font-bold text-gray-800">{r.bags ? `${r.bags} बैग माल आया` : 'पैसे जमा किए'}</p>
+                                </div>
+                                <div className="text-right flex items-center gap-2">
+                                    <div>
+                                        {r.totalCost > 0 && <p className="text-sm font-black text-red-600">बिल: ₹{r.totalCost}</p>}
+                                        {r.paid > 0 && <p className="text-sm font-black text-green-600">जमा: ₹{r.paid}</p>}
+                                    </div>
+                                    <button onClick={()=>handleEditClick(r)} className="text-blue-500 p-1"><i className="fas fa-edit"></i></button>
+                                    <button onClick={()=>handleDeleteRecord(r.id)} className="text-red-400 p-1"><i className="fas fa-times-circle"></i></button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+
+        function CowProfileDetail({profile, onUpdate, onBack, onDelete, appColor, onPrint}) {
+            const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+            const [feedKg, setFeedKg] = useState('');
+            const [feedRate, setFeedRate] = useState('');
+            const [otherCost, setOtherCost] = useState('');
+            const [otherNote, setOtherNote] = useState('');
+            const [printPeriod, setPrintPeriod] = useState('month');
+            const [editingId, setEditingId] = useState(null);
+
+            const handleEditClick = (r) => {
+                setDate(r.date ? new Date(r.date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]);
+                setFeedKg(r.feedKg || '');
+                setFeedRate(r.feedRate || '');
+                setOtherCost(r.otherCost || '');
+                setOtherNote(r.otherNote || '');
+                setEditingId(r.id);
+                window.scrollTo(0,0);
+            };
+
+            const handlePrintClick = () => {
+                const today = new Date();
+                const filtered = (profile.history || []).filter(r => {
+                    if (!r.date) return true;
+                    const d = new Date(r.date);
+                    if (printPeriod === 'today') return d.toDateString() === today.toDateString();
+                    if (printPeriod === 'month') return d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
+                    if (printPeriod === 'year') return d.getFullYear() === today.getFullYear();
+                    return true;
+                });
+                let periodLabel = 'महीने का';
+                if(printPeriod === 'today') periodLabel = 'आज का';
+                if(printPeriod === 'year') periodLabel = 'साल का';
+                if(printPeriod === 'all') periodLabel = 'पूरा रिकॉर्ड';
+
+                onPrint({ data: filtered, reportTitle: 'गाय के खर्च का रिकॉर्ड', profileName: profile.name, periodLabel }, 'expense_report');
+            };
+
+            const handleAdd = (e) => {
+                e.preventDefault();
+                if(!feedKg && !otherCost) return;
+                const newRecord = {
+                    id: editingId || Date.now().toString(),
+                    date,
+                    feedKg: parseFloat(feedKg) || 0,
+                    feedRate: parseFloat(feedRate) || 0,
+                    otherCost: parseFloat(otherCost) || 0,
+                    otherNote
+                };
+                
+                const updatedHistory = editingId 
+                    ? (profile.history || []).map(r => r.id === editingId ? newRecord : r)
+                    : [newRecord, ...(profile.history || [])];
+
+                onUpdate({ ...profile, history: updatedHistory });
+                setFeedKg(''); setFeedRate(''); setOtherCost(''); setOtherNote(''); setEditingId(null);
+                setDate(new Date().toISOString().split('T')[0]);
+            };
+
+            const handleDeleteRecord = (id) => {
+                onUpdate({ ...profile, history: (profile.history || []).filter(r => r.id !== id) });
+            };
+
+            return (
+                <div className="space-y-4 animate-fade-in">
+                    <div className="flex justify-between items-center mb-2 border-b pb-2">
+                        <button onClick={onBack} className="text-gray-600 font-bold bg-gray-100 px-3 py-1.5 rounded-lg"><i className="fas fa-arrow-left"></i> वापस</button>
+                        <h3 className="font-black text-xl text-gray-800">🐄 {profile.name}</h3>
+                        <div className="flex gap-2">
+                            <select value={printPeriod} onChange={e=>setPrintPeriod(e.target.value)} className="border p-1 rounded-lg text-xs font-bold outline-none">
+                                <option value="today">आज</option>
+                                <option value="month">महीना</option>
+                                <option value="year">साल</option>
+                                <option value="all">पूरा</option>
+                            </select>
+                            <button onClick={handlePrintClick} className="text-red-600 bg-red-50 px-2 py-1 rounded-lg border font-bold text-xs"><i className="fas fa-file-pdf"></i></button>
+                            <button onClick={onDelete} className="text-red-500 bg-red-50 px-2 py-1 rounded-lg border"><i className="fas fa-trash"></i></button>
+                        </div>
+                    </div>
+                    
+                    <form onSubmit={handleAdd} className={`${editingId ? 'bg-blue-50 border-blue-200' : 'bg-gray-50 border-gray-200'} p-4 rounded-xl border space-y-3`}>
+                        {editingId && <p className="font-bold text-sm border-b pb-1 text-blue-800"><i className="fas fa-edit"></i> गाय का खर्च एडिट करें</p>}
+                        <input type="date" value={date} onChange={e=>setDate(e.target.value)} className="w-full border p-2 rounded-lg bg-white outline-none" required />
+                        <div className="grid grid-cols-2 gap-2">
+                            <input type="number" step="0.1" value={feedKg} onChange={e=>setFeedKg(e.target.value)} placeholder="चारा (Kg)" className="border p-2 rounded-lg bg-white font-bold outline-none" />
+                            <input type="number" step="0.1" value={feedRate} onChange={e=>setFeedRate(e.target.value)} placeholder="रेट (₹/Kg)" className="border p-2 rounded-lg bg-white font-bold outline-none" />
+                        </div>
+                        <div className="flex gap-2">
+                            <input type="text" value={otherNote} onChange={e=>setOtherNote(e.target.value)} placeholder="अन्य विवरण" className="border p-2 rounded-lg flex-1 bg-white outline-none" />
+                            <input type="number" value={otherCost} onChange={e=>setOtherCost(e.target.value)} placeholder="रुपये (₹)" className="border p-2 rounded-lg w-24 bg-white font-bold outline-none" />
+                        </div>
+                        <div className="flex gap-2">
+                            <button type="submit" className="flex-1 text-white font-bold p-3 rounded-lg btn-3d" style={{backgroundColor: appColor}}>{editingId ? 'अपडेट करें' : 'खर्च जोड़ें'}</button>
+                            {editingId && <button type="button" onClick={()=>{setEditingId(null); setFeedKg(''); setFeedRate(''); setOtherCost(''); setOtherNote('');}} className="bg-gray-400 text-white font-bold px-4 rounded-lg btn-3d">रद्द</button>}
+                        </div>
+                    </form>
+
+                    <div className="space-y-2 mt-4">
+                        {(profile.history || []).map(r => {
+                            const total = (r.feedKg * r.feedRate) + r.otherCost;
+                            return (
+                                <div key={r.id} className="bg-white p-3 rounded-xl border flex justify-between items-center">
+                                    <div>
+                                        <p className="text-xs text-gray-500 font-bold">{new Date(r.date).toLocaleDateString('en-IN')}</p>
+                                        <p className="text-sm font-bold text-gray-700">
+                                            {r.feedKg > 0 ? `चारा: ${r.feedKg}Kg @ ₹${r.feedRate}` : ''}
+                                            {r.otherCost > 0 ? ` | ${r.otherNote}` : ''}
+                                        </p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="font-black text-red-600">₹{total.toFixed(1)}</span>
+                                        <button onClick={()=>handleEditClick(r)} className="text-blue-500 p-1"><i className="fas fa-edit"></i></button>
+                                        <button onClick={()=>handleDeleteRecord(r.id)} className="text-red-400 p-1"><i className="fas fa-trash"></i></button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        }
+
+        function CalfProfileDetail({profile, onUpdate, onBack, onDelete, appColor, onPrint}) {
+            const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+            const [morningM, setMorningM] = useState('');
+            const [eveningM, setEveningM] = useState('');
+            const [milkRate, setMilkRate] = useState('');
+            const [printPeriod, setPrintPeriod] = useState('month');
+            const [editingId, setEditingId] = useState(null);
+
+            const handleEditClick = (r) => {
+                setDate(r.date ? new Date(r.date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]);
+                setMorningM(r.morningM || '');
+                setEveningM(r.eveningM || '');
+                setMilkRate(r.milkRate || '');
+                setEditingId(r.id);
+                window.scrollTo(0,0);
+            };
+
+            const handlePrintClick = () => {
+                const today = new Date();
+                const filtered = (profile.history || []).filter(r => {
+                    if (!r.date) return true;
+                    const d = new Date(r.date);
+                    if (printPeriod === 'today') return d.toDateString() === today.toDateString();
+                    if (printPeriod === 'month') return d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
+                    if (printPeriod === 'year') return d.getFullYear() === today.getFullYear();
+                    return true;
+                });
+                let periodLabel = 'महीने का';
+                if(printPeriod === 'today') periodLabel = 'आज का';
+                if(printPeriod === 'year') periodLabel = 'साल का';
+                if(printPeriod === 'all') periodLabel = 'पूरा रिकॉर्ड';
+
+                onPrint({ data: filtered, reportTitle: 'बछड़े / बच्चे के दूध का रिकॉर्ड', profileName: profile.name, periodLabel }, 'expense_report');
+            };
+
+            const handleAdd = (e) => {
+                e.preventDefault();
+                if(!morningM && !eveningM) return;
+                const newRecord = {
+                    id: editingId || Date.now().toString(),
+                    date,
+                    morningM: parseFloat(morningM) || 0,
+                    eveningM: parseFloat(eveningM) || 0,
+                    milkRate: parseFloat(milkRate) || 0
+                };
+                
+                const updatedHistory = editingId 
+                    ? (profile.history || []).map(r => r.id === editingId ? newRecord : r)
+                    : [newRecord, ...(profile.history || [])];
+
+                onUpdate({ ...profile, history: updatedHistory });
+                setMorningM(''); setEveningM(''); setEditingId(null);
+                setDate(new Date().toISOString().split('T')[0]);
+            };
+            
+            const handleDeleteRecord = (id) => {
+                onUpdate({ ...profile, history: (profile.history || []).filter(r => r.id !== id) });
+            };
+
+            return (
+                <div className="space-y-4 animate-fade-in">
+                    <div className="flex justify-between items-center mb-2 border-b pb-2">
+                        <button onClick={onBack} className="text-gray-600 font-bold bg-gray-100 px-3 py-1.5 rounded-lg"><i className="fas fa-arrow-left"></i> वापस</button>
+                        <h3 className="font-black text-xl text-gray-800">🐃 {profile.name}</h3>
+                        <div className="flex gap-2">
+                            <select value={printPeriod} onChange={e=>setPrintPeriod(e.target.value)} className="border p-1 rounded-lg text-xs font-bold outline-none">
+                                <option value="today">आज</option>
+                                <option value="month">महीना</option>
+                                <option value="year">साल</option>
+                                <option value="all">पूरा</option>
+                            </select>
+                            <button onClick={handlePrintClick} className="text-red-600 bg-red-50 px-2 py-1 rounded-lg border font-bold text-xs"><i className="fas fa-file-pdf"></i></button>
+                            <button onClick={onDelete} className="text-red-500 bg-red-50 px-2 py-1 rounded-lg border"><i className="fas fa-trash"></i></button>
+                        </div>
+                    </div>
+                    
+                    <form onSubmit={handleAdd} className={`${editingId ? 'bg-blue-50 border-blue-200' : 'bg-gray-50 border-gray-200'} p-4 rounded-xl border space-y-3`}>
+                        {editingId && <p className="font-bold text-sm border-b pb-1 text-blue-800"><i className="fas fa-edit"></i> बछड़े का रिकॉर्ड एडिट करें</p>}
+                        <input type="date" value={date} onChange={e=>setDate(e.target.value)} className="w-full border p-2 rounded-lg bg-white outline-none" required />
+                        <div className="grid grid-cols-2 gap-2">
+                            <input type="number" step="0.1" value={morningM} onChange={e=>setMorningM(e.target.value)} placeholder="सुबह दूध (L)" className="border p-2 rounded-lg bg-white font-bold outline-none" />
+                            <input type="number" step="0.1" value={eveningM} onChange={e=>setEveningM(e.target.value)} placeholder="शाम दूध (L)" className="border p-2 rounded-lg bg-white font-bold outline-none" />
+                        </div>
+                        <input type="number" step="0.1" value={milkRate} onChange={e=>setMilkRate(e.target.value)} placeholder="दूध का रेट (₹/L)" className="w-full border p-2 rounded-lg bg-white font-bold outline-none" required />
+                        <div className="flex gap-2">
+                            <button type="submit" className="flex-1 text-white font-bold p-3 rounded-lg btn-3d" style={{backgroundColor: appColor}}>{editingId ? 'अपडेट करें' : 'रिकॉर्ड जोड़ें'}</button>
+                            {editingId && <button type="button" onClick={()=>{setEditingId(null); setMorningM(''); setEveningM('');}} className="bg-gray-400 text-white font-bold px-4 rounded-lg btn-3d">रद्द</button>}
+                        </div>
+                    </form>
+
+                    <div className="space-y-2 mt-4">
+                        {(profile.history || []).map(r => {
+                            const total = (r.morningM + r.eveningM) * r.milkRate;
+                            return (
+                                <div key={r.id} className="bg-white p-3 rounded-xl border flex justify-between items-center">
+                                    <div>
+                                        <p className="text-xs text-gray-500 font-bold">{new Date(r.date).toLocaleDateString('en-IN')}</p>
+                                        <p className="text-sm font-bold text-gray-700">सु: {r.morningM}L | शा: {r.eveningM}L (@ ₹{r.milkRate})</p>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="font-black text-red-600">₹{total.toFixed(1)}</span>
+                                        <button onClick={()=>handleEditClick(r)} className="text-blue-500 p-1"><i className="fas fa-edit"></i></button>
+                                        <button onClick={()=>handleDeleteRecord(r.id)} className="text-red-400 p-1"><i className="fas fa-trash"></i></button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        }
+
+        function OtherProfileDetail({profile, onUpdate, onBack, onDelete, appColor, onPrint}) {
+            const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+            const [amount, setAmount] = useState('');
+            const [note, setNote] = useState('');
+            const [qty, setQty] = useState('');
+            const [printPeriod, setPrintPeriod] = useState('month');
+            const [editingId, setEditingId] = useState(null);
+
+            const handleEditClick = (r) => {
+                setDate(r.date ? new Date(r.date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]);
+                setAmount(r.amount || '');
+                setNote(r.note || '');
+                setQty(r.qty || '');
+                setEditingId(r.id);
+                window.scrollTo(0,0);
+            };
+
+            const handlePrintClick = () => {
+                const today = new Date();
+                const filtered = (profile.history || []).filter(r => {
+                    if (!r.date) return true;
+                    const d = new Date(r.date);
+                    if (printPeriod === 'today') return d.toDateString() === today.toDateString();
+                    if (printPeriod === 'month') return d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear();
+                    if (printPeriod === 'year') return d.getFullYear() === today.getFullYear();
+                    return true;
+                });
+                let periodLabel = 'महीने का';
+                if(printPeriod === 'today') periodLabel = 'आज का';
+                if(printPeriod === 'year') periodLabel = 'साल का';
+                if(printPeriod === 'all') periodLabel = 'पूरा रिकॉर्ड';
+
+                onPrint({ data: filtered, reportTitle: 'अन्य खर्च का रिकॉर्ड', profileName: profile.name, periodLabel }, 'expense_report');
+            };
+
+            const handleAdd = (e) => {
+                e.preventDefault();
+                if(!amount) return;
+                const newRecord = {
+                    id: editingId || Date.now().toString(),
+                    date,
+                    amount: parseFloat(amount) || 0,
+                    note,
+                    qty
+                };
+                
+                const updatedHistory = editingId 
+                    ? (profile.history || []).map(r => r.id === editingId ? newRecord : r)
+                    : [newRecord, ...(profile.history || [])];
+
+                onUpdate({ ...profile, history: updatedHistory });
+                setAmount(''); setNote(''); setQty(''); setEditingId(null);
+                setDate(new Date().toISOString().split('T')[0]);
+            };
+
+            const handleDeleteRecord = (id) => {
+                onUpdate({ ...profile, history: (profile.history || []).filter(r => r.id !== id) });
+            };
+
+            return (
+                <div className="space-y-4 animate-fade-in">
+                    <div className="flex justify-between items-center mb-2 border-b pb-2">
+                        <button onClick={onBack} className="text-gray-600 font-bold bg-gray-100 px-3 py-1.5 rounded-lg"><i className="fas fa-arrow-left"></i> वापस</button>
+                        <h3 className="font-black text-xl text-gray-800">📝 {profile.name}</h3>
+                        <div className="flex gap-2">
+                            <select value={printPeriod} onChange={e=>setPrintPeriod(e.target.value)} className="border p-1 rounded-lg text-xs font-bold outline-none">
+                                <option value="today">आज</option>
+                                <option value="month">महीना</option>
+                                <option value="year">साल</option>
+                                <option value="all">पूरा</option>
+                            </select>
+                            <button onClick={handlePrintClick} className="text-red-600 bg-red-50 px-2 py-1 rounded-lg border font-bold text-xs"><i className="fas fa-file-pdf"></i></button>
+                            <button onClick={onDelete} className="text-red-500 bg-red-50 px-2 py-1 rounded-lg border"><i className="fas fa-trash"></i></button>
+                        </div>
+                    </div>
+                    
+                    <form onSubmit={handleAdd} className={`${editingId ? 'bg-blue-50 border-blue-200' : 'bg-gray-50 border-gray-200'} p-4 rounded-xl border space-y-3`}>
+                        {editingId && <p className="font-bold text-sm border-b pb-1 text-blue-800"><i className="fas fa-edit"></i> खर्च एडिट करें</p>}
+                        <input type="date" value={date} onChange={e=>setDate(e.target.value)} className="w-full border p-2 rounded-lg bg-white outline-none" required />
+                        <div className="flex gap-2">
+                            <input type="text" value={note} onChange={e=>setNote(e.target.value)} placeholder="विवरण (क्या मंगाया)" className="border p-2 rounded-lg flex-1 bg-white outline-none" required />
+                            <input type="text" value={qty} onChange={e=>setQty(e.target.value)} placeholder="मात्रा" className="border p-2 rounded-lg w-24 bg-white outline-none" />
+                        </div>
+                        <input type="number" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="रुपये (₹)" className="w-full border p-2 rounded-lg bg-white font-bold outline-none" required />
+                        <div className="flex gap-2">
+                            <button type="submit" className="flex-1 text-white font-bold p-3 rounded-lg btn-3d" style={{backgroundColor: appColor}}>{editingId ? 'अपडेट करें' : 'खर्च जोड़ें'}</button>
+                            {editingId && <button type="button" onClick={()=>{setEditingId(null); setAmount(''); setNote(''); setQty('');}} className="bg-gray-400 text-white font-bold px-4 rounded-lg btn-3d">रद्द</button>}
+                        </div>
+                    </form>
+
+                    <div className="space-y-2 mt-4">
+                        {(profile.history || []).map(r => (
+                            <div key={r.id} className="bg-white p-3 rounded-xl border flex justify-between items-center">
+                                <div>
+                                    <p className="text-xs text-gray-500 font-bold">{new Date(r.date).toLocaleDateString('en-IN')}</p>
+                                    <p className="text-sm font-bold text-gray-700">{r.note} {r.qty ? `(${r.qty})` : ''}</p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <span className="font-black text-red-600">₹{r.amount}</span>
+                                    <button onClick={()=>handleEditClick(r)} className="text-blue-500 p-1"><i className="fas fa-edit"></i></button>
+                                    <button onClick={()=>handleDeleteRecord(r.id)} className="text-red-400 p-1"><i className="fas fa-trash"></i></button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+
+        // 5. SETTINGS COMPONENT
+        function Settings({data, saveData, appColor}) {
+            const [farmName, setFarmName] = useState(data.settings.farmName);
+            const [themeColor, setThemeColor] = useState(data.settings.themeColor);
+
+            const colors = [
+                { hex: '#1e3a8a', label: 'Dark Blue' }, // Premium Deep Blue
+                { hex: '#065f46', label: 'Forest Green' }, // Premium Dark Green
+                { hex: '#991b1b', label: 'Deep Red' },
+                { hex: '#4c1d95', label: 'Royal Purple' },
+                { hex: '#1f2937', label: 'Charcoal Black' }
+            ];
+
+            const handleSave = () => {
+                saveData({
+                    ...data,
+                    settings: { ...data.settings, farmName, themeColor }
+                });
+            };
+
+            return (
+                <div className="space-y-6 animate-fade-in bg-white p-6 rounded-2xl shadow-sm border">
+                    <h2 className="text-2xl font-black text-gray-800 border-b pb-2"><i className="fas fa-cog"></i> ऐप सेटिंग्स</h2>
+                    
+                    <div>
+                        <label className="block text-sm font-bold text-gray-700 mb-2">फार्म का नाम</label>
+                        <input type="text" value={farmName} onChange={e=>setFarmName(e.target.value)} className="w-full border p-3 rounded-xl outline-none font-bold bg-gray-50 focus:ring-2 focus:ring-gray-200" />
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-bold text-gray-700 mb-2">प्रीमियम थीम कलर</label>
+                        <div className="flex flex-wrap gap-3">
+                            {colors.map(c => (
+                                <button key={c.hex} onClick={() => setThemeColor(c.hex)}
+                                    className={`w-12 h-12 rounded-full border-4 transition-all btn-3d ${themeColor === c.hex ? 'border-gray-800 scale-110' : 'border-white shadow-md'}`}
+                                    style={{backgroundColor: c.hex}} title={c.label}>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    <button onClick={handleSave} className="w-full text-white font-bold p-4 rounded-xl text-lg btn-3d" style={{backgroundColor: appColor}}>
+                        सेटिंग्स सेव करें
+                    </button>
+                    
+                    <div className="mt-8 text-center text-gray-400 text-xs">
+                        <i className="fas fa-cloud-upload-alt text-lg block mb-1 text-green-500"></i>
+                        आपका डेटा ऑनलाइन सुरक्षित है।
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
